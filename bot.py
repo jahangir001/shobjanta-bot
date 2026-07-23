@@ -17,41 +17,87 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = discord.Client(intents=intents)
 
-# === WEB SEARCH (DuckDuckGo - FREE!) ===
+# === WEB SEARCH (DuckDuckGo with error handling) ===
 async def search_web(query):
-    """Search using DuckDuckGo - no API key needed!"""
+    """Search using DuckDuckGo with multiple fallback methods"""
     try:
-        def _search():
-            with DDGS() as ddgs:
-                results = list(ddgs.text(query, max_results=3))
-                return results
+        print(f"🔍 Searching for: {query}")
         
-        results = await asyncio.to_thread(_search)
+        # Method 1: Try DDGS library
+        def _search_ddgs():
+            try:
+                with DDGS() as ddgs:
+                    results = list(ddgs.text(query, max_results=3))
+                    return results
+            except Exception as e:
+                print(f"DDGS error: {e}")
+                return []
         
-        if not results:
-            return None
+        results = await asyncio.to_thread(_search_ddgs)
         
-        context_parts = []
-        total_length = 0
-        MAX_TOTAL = 2500
-        
-        for r in results[:3]:
-            content = r.get('body', '')[:400]
-            url = r.get('href', '')
-            title = r.get('title', '')
-            part = f"Title: {title}\nSource: {url}\n{content}"
+        if results and len(results) > 0:
+            print(f"✅ Got {len(results)} results from DDGS")
             
-            if total_length + len(part) > MAX_TOTAL:
-                break
+            context_parts = []
+            total_length = 0
+            MAX_TOTAL = 2500
             
-            context_parts.append(part)
-            total_length += len(part)
+            for r in results[:3]:
+                content = r.get('body', '')[:400]
+                url = r.get('href', '')
+                title = r.get('title', '')
+                part = f"Title: {title}\nSource: {url}\n{content}"
+                
+                if total_length + len(part) > MAX_TOTAL:
+                    break
+                
+                context_parts.append(part)
+                total_length += len(part)
+            
+            if context_parts:
+                return "\n\n".join(context_parts)
         
-        if context_parts:
-            return "\n\n".join(context_parts)
+        print("⚠️ DDGS returned no results, trying fallback...")
+        
+        # Method 2: Fallback to direct DuckDuckGo HTML scraping
+        def _search_html():
+            try:
+                url = "https://html.duckduckgo.com/html/"
+                data = {'q': query, 'b': ''}
+                response = requests.post(url, data=data, headers={
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                }, timeout=10)
+                
+                if response.status_code == 200:
+                    # Simple parsing - extract text snippets
+                    import re
+                    snippets = re.findall(r'class="result__snippet"[^>]*>(.*?)</a>', response.text, re.DOTALL)
+                    urls = re.findall(r'class="result__url"[^>]*>(.*?)</a>', response.text, re.DOTALL)
+                    
+                    parts = []
+                    for i, snippet in enumerate(snippets[:3]):
+                        url_text = urls[i].strip() if i < len(urls) else ""
+                        # Clean HTML tags
+                        clean_snippet = re.sub(r'<[^>]+>', '', snippet).strip()[:400]
+                        if clean_snippet:
+                            parts.append(f"Source: {url_text}\n{clean_snippet}")
+                    
+                    return "\n\n".join(parts) if parts else None
+                return None
+            except Exception as e:
+                print(f"HTML scrape error: {e}")
+                return None
+        
+        html_results = await asyncio.to_thread(_search_html)
+        if html_results:
+            print(f"✅ Got results from HTML scraping")
+            return html_results
+        
+        print("❌ All search methods failed")
         return None
+        
     except Exception as e:
-        print(f"❌ Search error: {e}")
+        print(f"❌ Search exception: {e}")
         return None
 
 # === AI WITH AUTO WEB SEARCH ===
@@ -68,26 +114,31 @@ async def get_ai_response(user_message, username, ctx_channel=None):
             'this week', 'this month', 'this year', 'yesterday', 'tomorrow',
             'live', 'breaking', 'winner', 'who won', 'world cup', 'worldcup',
             '2026', '2025', '2024', 'president', 'election', 'stock',
-            'crypto', 'bitcoin', 'match', 'game', 'tournament'
+            'crypto', 'bitcoin', 'match', 'game', 'tournament', 'result'
         ]
         
         message_lower = user_message.lower()
         needs_search = any(keyword in message_lower for keyword in needs_search_keywords)
         
-        search_context = ""
+        search_context = ""  # ← Always start as empty string!
         if needs_search:
             if ctx_channel:
                 await ctx_channel.send('🔍 *Searching the web...*')
             
-            search_context = await search_web(user_message)
-            if search_context:
-                search_context = f"\n\n=== CURRENT WEB INFORMATION ===\n{search_context}\n=== END ===\n\nUse the above web search results to provide up-to-date information. Always cite source URLs."
+            search_result = await search_web(user_message)
+            
+            # ← FIX: Check if result is not None before concatenating!
+            if search_result and search_result.strip():
+                search_context = f"\n\n=== CURRENT WEB INFORMATION ===\n{search_result}\n=== END ===\n\nUse the above web search results to provide up-to-date information. Always cite source URLs."
                 print(f"✅ Search context: {len(search_context)} chars")
             else:
                 if ctx_channel:
                     await ctx_channel.send('⚠️ *No search results, using my training data.*')
         
-        full_prompt = user_message + search_context
+        # ← FIX: Safe concatenation
+        full_prompt = user_message
+        if search_context and search_context.strip():
+            full_prompt = user_message + search_context
         
         response = requests.post(
             'https://api.groq.com/openai/v1/chat/completions',
@@ -143,7 +194,7 @@ async def get_ai_response_no_search(user_message, username):
     except Exception as e:
         return f'❌ Error: {str(e)}'
 
-# === SPEECH-TO-TEXT (Voice → Text) ===
+# === SPEECH-TO-TEXT ===
 async def transcribe_voice(audio_url):
     try:
         groq_key = os.getenv("GROQ_API_KEY")
@@ -171,7 +222,7 @@ async def transcribe_voice(audio_url):
     except Exception as e:
         return None, f"❌ Error: {str(e)}"
 
-# === TEXT-TO-SPEECH (Text → Voice) ===
+# === TEXT-TO-SPEECH ===
 async def text_to_speech(text):
     try:
         clean_text = text
@@ -206,7 +257,7 @@ async def on_ready():
     print(f'✅ Bot ONLINE: {bot.user}')
     print(f'Model: {MODEL_NAME}')
     print(f'Voice: {VOICE_NAME}')
-    print(f'Web Search: ✅ DuckDuckGo (FREE)')
+    print(f'Web Search: ✅ DuckDuckGo (with fallback)')
     print(f'Servers: {len(bot.guilds)}')
     print('=' * 50)
 
@@ -226,7 +277,7 @@ async def on_message(message):
     if content == '!model':
         await message.channel.send(
             f'🤖 **Model:** `{MODEL_NAME}`\n'
-            f'🌐 **Web Search:** ✅ DuckDuckGo (FREE)\n'
+            f'🌐 **Web Search:** ✅ DuckDuckGo\n'
             f'🔊 **Voice:** `{VOICE_NAME}`'
         )
         return
@@ -254,7 +305,7 @@ async def on_message(message):
             if results:
                 await message.channel.send(f'**Results for:** {query}\n\n{results[:1900]}')
             else:
-                await message.channel.send('❌ No results found')
+                await message.channel.send('❌ No results found. Try different keywords.')
         return
     
     if content == '!help':
@@ -322,5 +373,4 @@ async def on_message(message):
                         except:
                             pass
 
-# === RUN BOT ===
 bot.run(os.getenv("DISCORD_TOKEN"))
