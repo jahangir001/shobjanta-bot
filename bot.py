@@ -18,117 +18,133 @@ bot = discord.Client(intents=intents)
 
 # === WEB SEARCH (Multiple methods, ultra-safe) ===
 async def search_web(query):
-    """Search the web with multiple methods - gets current info!"""
+    """Universal web search - works for ANY current topic!"""
+    from datetime import datetime, timedelta
+    import xml.etree.ElementTree as ET
+    import urllib.parse
+    from email.utils import parsedate_to_datetime
     
-    # Method 1: Google News RSS (BEST for current events!)
     try:
-        import urllib.parse
-        import xml.etree.ElementTree as ET
+        # Calculate date 14 days ago (catches recent events)
+        cutoff_date = datetime.now() - timedelta(days=14)
+        date_str = cutoff_date.strftime('%Y-%m-%d')
         
+        # Search Google News with date filter
         encoded_query = urllib.parse.quote(query)
-        url = f"https://news.google.com/rss/search?q={encoded_query}&hl=en-US&gl=US&ceid=US:en"
+        url = (
+            f"https://news.google.com/rss/search?"
+            f"q={encoded_query}+after:{date_str}&"
+            f"hl=en-US&gl=US&ceid=US:en"
+        )
         
         response = requests.get(url, timeout=10, headers={
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         })
         
-        if response.status_code == 200:
-            try:
-                root = ET.fromstring(response.content)
-                items = root.findall('.//item')
-                
-                if items:
-                    parts = []
-                    for i, item in enumerate(items[:5]):  # Top 5 news
-                        title = item.find('title').text if item.find('title') is not None else ''
-                        pub_date = item.find('pubDate').text if item.find('pubDate') is not None else ''
-                        source = item.find('source').text if item.find('source') is not None else 'Unknown'
-                        
-                        if title:
-                            parts.append(f"[{i+1}] {title}\nSource: {source}\nPublished: {pub_date}")
-                    
-                    if parts:
-                        return "=== LATEST NEWS ===\n" + "\n\n".join(parts)
-            except ET.ParseError:
-                pass
-    except Exception as e:
-        print(f"Google News error: {e}")
-    
-    # Method 2: Wikipedia (full article content)
-    try:
-        # Search for relevant pages
-        search_response = requests.get(
-            'https://en.wikipedia.org/w/api.php',
-            params={
-                'action': 'query',
-                'list': 'search',
-                'srsearch': query,
-                'format': 'json',
-                'srlimit': 2
-            },
-            timeout=10
-        )
+        if response.status_code != 200:
+            return ""
         
-        if search_response.status_code == 200:
-            data = search_response.json()
-            results = data.get('query', {}).get('search', [])
-            
-            if results:
-                # Get full content of top result
-                titles = [results[0]['title']]
-                
-                content_response = requests.get(
-                    'https://en.wikipedia.org/w/api.php',
-                    params={
-                        'action': 'query',
-                        'titles': titles[0],
-                        'prop': 'extracts',
-                        'exintro': False,
-                        'explaintext': True,
-                        'format': 'json'
-                    },
-                    timeout=10
-                )
-                
-                if content_response.status_code == 200:
-                    content_data = content_response.json()
-                    pages = content_data.get('query', {}).get('pages', {})
-                    
-                    for page_id, page_data in pages.items():
-                        if page_id != '-1':
-                            extract = page_data.get('extract', '')
-                            if extract and len(extract) > 200:
-                                # Truncate to 2000 chars but keep important parts
-                                return f"=== Wikipedia: {titles[0]} ===\n{extract[:2000]}"
-    except Exception as e:
-        print(f"Wikipedia error: {e}")
-    
-    # Method 3: DuckDuckGo instant answer (for quick facts)
-    try:
-        response = requests.get(
-            'https://api.duckduckgo.com/',
-            params={
-                'q': query,
-                'format': 'json',
-                'no_html': 1,
-                'skip_disambig': 1
-            },
-            timeout=10
-        )
+        # Parse XML
+        try:
+            root = ET.fromstring(response.content)
+        except ET.ParseError:
+            return ""
         
-        if response.status_code == 200:
-            data = response.json()
-            abstract = data.get('Abstract', '')
-            answer = data.get('Answer', '')
+        items = root.findall('.//item')
+        if not items:
+            return ""
+        
+        # Process and filter articles
+        articles = []
+        for item in items[:15]:  # Check top 15
+            title_elem = item.find('title')
+            pub_date_elem = item.find('pubDate')
+            source_elem = item.find('source')
             
-            if abstract:
-                return f"=== Quick Info ===\n{abstract[:1500]}"
-            elif answer:
-                return f"=== Answer ===\n{answer}"
-    except Exception as e:
-        print(f"DDG instant answer error: {e}")
+            if title_elem is None:
+                continue
+            
+            title = title_elem.text
+            pub_date_str = pub_date_elem.text if pub_date_elem is not None else ''
+            source = source_elem.text if source_elem is not None else 'Unknown'
+            
+            # Parse date
+            article_date = None
+            if pub_date_str:
+                try:
+                    article_date = parsedate_to_datetime(pub_date_str)
+                except:
+                    pass
+            
+            # Skip if too old
+            if article_date:
+                try:
+                    if article_date < cutoff_date:
+                        continue
+                except:
+                    pass
+            
+            # Score based on how "current" the article sounds
+            score = 0
+            title_lower = title.lower()
+            
+            # Boost recent results keywords
+            current_keywords = ['wins', 'won', 'defeats', 'beats', 'champion', 
+                              'announced', 'released', 'launches', 'reveals',
+                              'final', 'result', 'today', 'yesterday', 'this week']
+            for keyword in current_keywords:
+                if keyword in title_lower:
+                    score += 5
+            
+            # Penalize prediction/speculation
+            speculation_keywords = ['prediction', 'predict', 'simulate', 'forecast',
+                                   'might', 'could', 'possibly', 'speculation']
+            for keyword in speculation_keywords:
+                if keyword in title_lower:
+                    score -= 10
+            
+            # Boost if very recent (last 3 days)
+            if article_date:
+                try:
+                    days_old = (datetime.now(article_date.tzinfo) - article_date).days
+                    if days_old <= 1:
+                        score += 15
+                    elif days_old <= 3:
+                        score += 10
+                    elif days_old <= 7:
+                        score += 5
+                except:
+                    pass
+            
+            articles.append({
+                'title': title,
+                'source': source,
+                'date': pub_date_str,
+                'score': score,
+                'days_old': (datetime.now(article_date.tzinfo) - article_date).days if article_date else 999
+            })
+        
+        if not articles:
+            return ""
+        
+        # Sort by score (highest first), then by recency
+        articles.sort(key=lambda x: (x['score'], -x['days_old']), reverse=True)
+        
+        # Build result string with top 5
+        parts = ["=== LATEST NEWS (Most Recent & Relevant) ==="]
+        for i, article in enumerate(articles[:5]):
+            parts.append(
+                f"\n[{i+1}] {article['title']}\n"
+                f"Source: {article['source']}\n"
+                f"Published: {article['date']}"
+            )
+        
+        return "\n".join(parts)
     
-    return ""
+    except Exception as e:
+        print(f"Search error: {e}")
+        return ""
+
 
 # === AI WITH WEB SEARCH (100% safe from None errors) ===
 async def get_ai_response(user_message, username, ctx_channel=None):
