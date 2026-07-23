@@ -18,99 +18,59 @@ bot = discord.Client(intents=intents)
 
 # === WEB SEARCH (Multiple methods, ultra-safe) ===
 async def search_web(query):
-    """Get recent, specific news articles for any topic"""
+    """Simple search that works for any topic - no date filters!"""
     import re
-    from datetime import datetime, timedelta
-    import xml.etree.ElementTree as ET
     import urllib.parse
-    from email.utils import parsedate_to_datetime
     
     try:
-        # Calculate dates
-        now = datetime.now()
-        week_ago = now - timedelta(days=7)
-        week_ago_str = week_ago.strftime('%Y-%m-%d')
-        
-        # Search Google News with date filter for recent results
+        # Use DuckDuckGo HTML (we know this works)
         encoded_query = urllib.parse.quote(query)
-        url = (
-            f"https://news.google.com/rss/search?"
-            f"q={encoded_query}+after:{week_ago_str}&"
-            f"hl=en-US&gl=US&ceid=US:en"
+        url = f"https://html.duckduckgo.com/html/?q={encoded_query}"
+        
+        response = requests.post(
+            url,
+            data={'q': query},
+            headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            },
+            timeout=15
         )
         
-        response = requests.get(url, timeout=10, headers={
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        })
-        
         if response.status_code == 200:
-            try:
-                root = ET.fromstring(response.content)
-                items = root.findall('.//item')
+            html = response.text
+            
+            # Extract search results
+            results = []
+            
+            # Find result titles and snippets
+            # DuckDuckGo HTML structure
+            title_pattern = r'class="result__a"[^>]*>(.*?)</a>'
+            snippet_pattern = r'class="result__snippet"[^>]*>(.*?)</a>'
+            url_pattern = r'class="result__url"[^>]*>(.*?)</a>'
+            
+            titles = re.findall(title_pattern, html, re.DOTALL)
+            snippets = re.findall(snippet_pattern, html, re.DOTALL)
+            urls = re.findall(url_pattern, html, re.DOTALL)
+            
+            # Clean and combine results
+            for i in range(min(5, len(titles))):
+                # Remove HTML tags
+                title = re.sub(r'<[^>]+>', '', titles[i]).strip()
+                snippet = re.sub(r'<[^>]+>', '', snippets[i]).strip() if i < len(snippets) else ''
+                url_text = re.sub(r'<[^>]+>', '', urls[i]).strip() if i < len(urls) else ''
                 
-                if items:
-                    # Get articles from the last week
-                    articles = []
-                    for item in items[:20]:
-                        title_elem = item.find('title')
-                        pub_date_elem = item.find('pubDate')
-                        source_elem = item.find('source')
-                        
-                        if title_elem is None:
-                            continue
-                        
-                        title = title_elem.text
-                        pub_date_str = pub_date_elem.text if pub_date_elem is not None else ''
-                        source = source_elem.text if source_elem is not None else ''
-                        
-                        # Parse date and check if recent
-                        if pub_date_str:
-                            try:
-                                article_date = parsedate_to_datetime(pub_date_str)
-                                days_old = (datetime.now(article_date.tzinfo) - article_date).days
-                                
-                                # Only include articles from last 7 days
-                                if days_old > 7:
-                                    continue
-                                
-                                articles.append({
-                                    'title': title,
-                                    'source': source,
-                                    'date': pub_date_str,
-                                    'days_old': days_old
-                                })
-                            except:
-                                # If date parsing fails, include anyway
-                                articles.append({
-                                    'title': title,
-                                    'source': source,
-                                    'date': pub_date_str,
-                                    'days_old': 999
-                                })
-                    
-                    if articles:
-                        # Sort by most recent first
-                        articles.sort(key=lambda x: x['days_old'])
-                        
-                        # Take top 5 most recent
-                        parts = ["=== RECENT NEWS (Last 7 Days) ==="]
-                        for i, article in enumerate(articles[:5]):
-                            parts.append(
-                                f"\n[{i+1}] {article['title']}\n"
-                                f"Source: {article['source']}\n"
-                                f"Published: {article['date']}\n"
-                                f"({article['days_old']} days ago)"
-                            )
-                        
-                        return "\n".join(parts)
-            except ET.ParseError:
-                pass
+                if title and snippet:
+                    results.append(f"[{i+1}] {title}\n{snippet}\nURL: {url_text}")
+            
+            if results:
+                return "=== Search Results ===\n" + "\n\n".join(results)
         
         return ""
     
     except Exception as e:
         print(f"Search error: {e}")
         return ""
+
 
 # === AI WITH WEB SEARCH (100% safe from None errors) ===
 async def get_ai_response(user_message, username, ctx_channel=None):
