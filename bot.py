@@ -18,66 +18,116 @@ bot = discord.Client(intents=intents)
 
 # === WEB SEARCH (Multiple methods, ultra-safe) ===
 async def search_web(query):
-    """Search the web with multiple fallback methods"""
-    # Try Method 1: duckduckgo-search library
-    try:
-        from duckduckgo_search import DDGS
-        
-        def _search():
-            with DDGS() as ddgs:
-                results = list(ddgs.text(query, max_results=3))
-                return results
-        
-        results = await asyncio.to_thread(_search)
-        
-        if results and len(results) > 0:
-            parts = []
-            total = 0
-            for r in results[:3]:
-                content = str(r.get('body', ''))[:400]
-                url = str(r.get('href', ''))
-                title = str(r.get('title', ''))
-                part = f"Title: {title}\nSource: {url}\n{content}"
-                if total + len(part) > 2500:
-                    break
-                parts.append(part)
-                total += len(part)
-            
-            if parts:
-                return "\n\n".join(parts)
-    except Exception as e:
-        print(f"DDGS error: {e}")
+    """Search the web with multiple methods - gets current info!"""
     
-    # Try Method 2: Wikipedia API (very reliable!)
+    # Method 1: Google News RSS (BEST for current events!)
     try:
-        response = requests.get(
+        import urllib.parse
+        import xml.etree.ElementTree as ET
+        
+        encoded_query = urllib.parse.quote(query)
+        url = f"https://news.google.com/rss/search?q={encoded_query}&hl=en-US&gl=US&ceid=US:en"
+        
+        response = requests.get(url, timeout=10, headers={
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        })
+        
+        if response.status_code == 200:
+            try:
+                root = ET.fromstring(response.content)
+                items = root.findall('.//item')
+                
+                if items:
+                    parts = []
+                    for i, item in enumerate(items[:5]):  # Top 5 news
+                        title = item.find('title').text if item.find('title') is not None else ''
+                        pub_date = item.find('pubDate').text if item.find('pubDate') is not None else ''
+                        source = item.find('source').text if item.find('source') is not None else 'Unknown'
+                        
+                        if title:
+                            parts.append(f"[{i+1}] {title}\nSource: {source}\nPublished: {pub_date}")
+                    
+                    if parts:
+                        return "=== LATEST NEWS ===\n" + "\n\n".join(parts)
+            except ET.ParseError:
+                pass
+    except Exception as e:
+        print(f"Google News error: {e}")
+    
+    # Method 2: Wikipedia (full article content)
+    try:
+        # Search for relevant pages
+        search_response = requests.get(
             'https://en.wikipedia.org/w/api.php',
             params={
                 'action': 'query',
                 'list': 'search',
                 'srsearch': query,
                 'format': 'json',
-                'srlimit': 3
+                'srlimit': 2
+            },
+            timeout=10
+        )
+        
+        if search_response.status_code == 200:
+            data = search_response.json()
+            results = data.get('query', {}).get('search', [])
+            
+            if results:
+                # Get full content of top result
+                titles = [results[0]['title']]
+                
+                content_response = requests.get(
+                    'https://en.wikipedia.org/w/api.php',
+                    params={
+                        'action': 'query',
+                        'titles': titles[0],
+                        'prop': 'extracts',
+                        'exintro': False,
+                        'explaintext': True,
+                        'format': 'json'
+                    },
+                    timeout=10
+                )
+                
+                if content_response.status_code == 200:
+                    content_data = content_response.json()
+                    pages = content_data.get('query', {}).get('pages', {})
+                    
+                    for page_id, page_data in pages.items():
+                        if page_id != '-1':
+                            extract = page_data.get('extract', '')
+                            if extract and len(extract) > 200:
+                                # Truncate to 2000 chars but keep important parts
+                                return f"=== Wikipedia: {titles[0]} ===\n{extract[:2000]}"
+    except Exception as e:
+        print(f"Wikipedia error: {e}")
+    
+    # Method 3: DuckDuckGo instant answer (for quick facts)
+    try:
+        response = requests.get(
+            'https://api.duckduckgo.com/',
+            params={
+                'q': query,
+                'format': 'json',
+                'no_html': 1,
+                'skip_disambig': 1
             },
             timeout=10
         )
         
         if response.status_code == 200:
             data = response.json()
-            results = data.get('query', {}).get('search', [])
+            abstract = data.get('Abstract', '')
+            answer = data.get('Answer', '')
             
-            if results and len(results) > 0:
-                parts = []
-                for r in results[:3]:
-                    title = str(r.get('title', ''))
-                    snippet = re.sub(r'<[^>]+>', '', str(r.get('snippet', '')))[:400]
-                    parts.append(f"Title: {title}\n{snippet}")
-                
-                return "\n\n".join(parts)
+            if abstract:
+                return f"=== Quick Info ===\n{abstract[:1500]}"
+            elif answer:
+                return f"=== Answer ===\n{answer}"
     except Exception as e:
-        print(f"Wikipedia error: {e}")
+        print(f"DDG instant answer error: {e}")
     
-    # All methods failed
     return ""
 
 # === AI WITH WEB SEARCH (100% safe from None errors) ===
