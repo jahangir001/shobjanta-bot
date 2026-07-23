@@ -5,23 +5,89 @@ import edge_tts
 import asyncio
 import re
 import tempfile
+from duckduckgo_search import DDGS
 
 # === CONFIGURATION ===
 VOICE_ENABLED = True
 VOICE_NAME = "en-GB-SoniaNeural"
-MODEL_NAME = "groq/compound"
+MODEL_NAME = "llama-3.3-70b-versatile"
 
 # === DISCORD SETUP ===
 intents = discord.Intents.default()
 intents.message_content = True
 bot = discord.Client(intents=intents)
 
-# === AI FUNCTION WITH WEB SEARCH ===
-async def get_ai_response(user_message, username):
+# === WEB SEARCH (DuckDuckGo - FREE!) ===
+async def search_web(query):
+    """Search using DuckDuckGo - no API key needed!"""
+    try:
+        def _search():
+            with DDGS() as ddgs:
+                results = list(ddgs.text(query, max_results=3))
+                return results
+        
+        results = await asyncio.to_thread(_search)
+        
+        if not results:
+            return None
+        
+        context_parts = []
+        total_length = 0
+        MAX_TOTAL = 2500
+        
+        for r in results[:3]:
+            content = r.get('body', '')[:400]
+            url = r.get('href', '')
+            title = r.get('title', '')
+            part = f"Title: {title}\nSource: {url}\n{content}"
+            
+            if total_length + len(part) > MAX_TOTAL:
+                break
+            
+            context_parts.append(part)
+            total_length += len(part)
+        
+        if context_parts:
+            return "\n\n".join(context_parts)
+        return None
+    except Exception as e:
+        print(f"❌ Search error: {e}")
+        return None
+
+# === AI WITH AUTO WEB SEARCH ===
+async def get_ai_response(user_message, username, ctx_channel=None):
     try:
         groq_key = os.getenv("GROQ_API_KEY")
         if not groq_key:
             return "❌ GROQ_API_KEY not set!"
+        
+        # Detect if search is needed
+        needs_search_keywords = [
+            'today', 'now', 'current', 'latest', 'recent', 'news',
+            'weather', 'price', 'score', 'update', 'happening',
+            'this week', 'this month', 'this year', 'yesterday', 'tomorrow',
+            'live', 'breaking', 'winner', 'who won', 'world cup', 'worldcup',
+            '2026', '2025', '2024', 'president', 'election', 'stock',
+            'crypto', 'bitcoin', 'match', 'game', 'tournament'
+        ]
+        
+        message_lower = user_message.lower()
+        needs_search = any(keyword in message_lower for keyword in needs_search_keywords)
+        
+        search_context = ""
+        if needs_search:
+            if ctx_channel:
+                await ctx_channel.send('🔍 *Searching the web...*')
+            
+            search_context = await search_web(user_message)
+            if search_context:
+                search_context = f"\n\n=== CURRENT WEB INFORMATION ===\n{search_context}\n=== END ===\n\nUse the above web search results to provide up-to-date information. Always cite source URLs."
+                print(f"✅ Search context: {len(search_context)} chars")
+            else:
+                if ctx_channel:
+                    await ctx_channel.send('⚠️ *No search results, using my training data.*')
+        
+        full_prompt = user_message + search_context
         
         response = requests.post(
             'https://api.groq.com/openai/v1/chat/completions',
@@ -32,25 +98,25 @@ async def get_ai_response(user_message, username):
             json={
                 'model': MODEL_NAME,
                 'messages': [
-                    {'role': 'system', 'content': f'You are ShobJanta AI, a helpful Discord assistant. You are chatting with {username}. You have access to web search via built-in tools. Be concise (under 300 words), helpful, and honest. Always cite sources when using web search.'},
-                    {'role': 'user', 'content': user_message}
+                    {'role': 'system', 'content': f'You are ShobJanta AI powered by Llama 3.3 70B. Chatting with {username}. You have access to real-time web search. Be concise (under 300 words), helpful, and always cite sources. Use Discord-friendly formatting.'},
+                    {'role': 'user', 'content': full_prompt}
                 ],
-                'max_tokens': 1000,
+                'max_tokens': 800,
                 'temperature': 0.7
             },
-            timeout=45
+            timeout=30
         )
         
         if response.status_code == 200:
             return response.json()['choices'][0]['message']['content']
         elif response.status_code == 413:
-            return await get_ai_response_simple(user_message, username)
+            return await get_ai_response_no_search(user_message, username)
         else:
-            return f'❌ API error: {response.status_code} - {response.text[:200]}'
+            return f'❌ API error: {response.status_code}'
     except Exception as e:
         return f'❌ Error: {str(e)}'
 
-async def get_ai_response_simple(user_message, username):
+async def get_ai_response_no_search(user_message, username):
     try:
         groq_key = os.getenv("GROQ_API_KEY")
         response = requests.post(
@@ -60,15 +126,15 @@ async def get_ai_response_simple(user_message, username):
                 'Content-Type': 'application/json'
             },
             json={
-                'model': 'llama-3.3-70b-versatile',
+                'model': MODEL_NAME,
                 'messages': [
-                    {'role': 'system', 'content': f'You are ShobJanta AI chatting with {username}. Be concise and helpful.'},
+                    {'role': 'system', 'content': f'You are ShobJanta AI chatting with {username}. Be concise.'},
                     {'role': 'user', 'content': user_message}
                 ],
-                'max_tokens': 600,
+                'max_tokens': 500,
                 'temperature': 0.7
             },
-            timeout=30
+            timeout=20
         )
         
         if response.status_code == 200:
@@ -87,37 +153,21 @@ async def transcribe_voice(audio_url):
         audio_data = requests.get(audio_url, timeout=30)
         
         if audio_data.status_code != 200:
-            return None, f"❌ Failed to download audio: {audio_data.status_code}"
+            return None, f"❌ Failed to download: {audio_data.status_code}"
         
-        files = {
-            'file': ('voice.ogg', audio_data.content, 'audio/ogg'),
-        }
-        data = {
-            'model': 'whisper-large-v3',
-            'response_format': 'json',
-            'language': 'en',
-        }
-        headers = {
-            'Authorization': f'Bearer {groq_key}'
-        }
+        files = {'file': ('voice.ogg', audio_data.content, 'audio/ogg')}
+        data = {'model': 'whisper-large-v3', 'response_format': 'json', 'language': 'en'}
+        headers = {'Authorization': f'Bearer {groq_key}'}
         
         response = requests.post(
             'https://api.groq.com/openai/v1/audio/transcriptions',
-            headers=headers,
-            files=files,
-            data=data,
-            timeout=60
+            headers=headers, files=files, data=data, timeout=60
         )
         
         if response.status_code == 200:
             transcript = response.json().get('text', '').strip()
-            if transcript:
-                return transcript, None
-            else:
-                return None, "❌ Could not understand the voice message"
-        else:
-            return None, f"❌ Transcription error: {response.status_code}"
-    
+            return (transcript, None) if transcript else (None, "❌ Could not understand")
+        return None, f"❌ Transcription error: {response.status_code}"
     except Exception as e:
         return None, f"❌ Error: {str(e)}"
 
@@ -145,7 +195,6 @@ async def text_to_speech(text):
         
         await communicate.save(tmp_path)
         return tmp_path
-    
     except Exception as e:
         print(f'TTS Error: {e}')
         return None
@@ -157,6 +206,7 @@ async def on_ready():
     print(f'✅ Bot ONLINE: {bot.user}')
     print(f'Model: {MODEL_NAME}')
     print(f'Voice: {VOICE_NAME}')
+    print(f'Web Search: ✅ DuckDuckGo (FREE)')
     print(f'Servers: {len(bot.guilds)}')
     print('=' * 50)
 
@@ -174,36 +224,51 @@ async def on_message(message):
         return
     
     if content == '!model':
-        await message.channel.send(f'🤖 **Model:** `{MODEL_NAME}`\n🌐 **Web Search:** ✅ Built-in\n🔊 **Voice:** `{VOICE_NAME}`')
+        await message.channel.send(
+            f'🤖 **Model:** `{MODEL_NAME}`\n'
+            f'🌐 **Web Search:** ✅ DuckDuckGo (FREE)\n'
+            f'🔊 **Voice:** `{VOICE_NAME}`'
+        )
         return
     
     if content == '!voice on':
         VOICE_ENABLED = True
-        await message.channel.send('🔊 **Voice messages ENABLED!**')
+        await message.channel.send('🔊 **Voice ENABLED**')
         return
     
     if content == '!voice off':
         VOICE_ENABLED = False
-        await message.channel.send('🔇 **Voice messages disabled.**')
+        await message.channel.send('🔇 **Voice disabled**')
         return
     
     if content == '!voice':
         status = '🔊 ON' if VOICE_ENABLED else '🔇 OFF'
-        await message.channel.send(f'Voice output: **{status}**\nVoice input: **🎤 ON**')
+        await message.channel.send(f'Voice: **{status}**')
+        return
+    
+    if content.startswith('!search '):
+        query = content[8:]
+        async with message.channel.typing():
+            await message.channel.send('🔍 *Searching DuckDuckGo...*')
+            results = await search_web(query)
+            if results:
+                await message.channel.send(f'**Results for:** {query}\n\n{results[:1900]}')
+            else:
+                await message.channel.send('❌ No results found')
         return
     
     if content == '!help':
         embed = discord.Embed(
             title='🤖 ShobJanta AI',
-            description='AI assistant with voice + web search!',
+            description='AI with voice + web search!',
             color=0x00ff00
         )
-        embed.add_field(name='💬 Text Chat', value='Just type any message!', inline=False)
-        embed.add_field(name='🌐 Web Search', value='**Automatic!** I can search the internet!', inline=False)
-        embed.add_field(name='🎤 Voice Input', value='Send a voice message!', inline=False)
-        embed.add_field(name='🔊 Voice Output', value='`!voice on/off` to toggle', inline=False)
-        embed.add_field(name='🛠️ Commands', value='`!ping` `!model` `!help` `!voice`', inline=False)
-        embed.set_footer(text=f'Powered by {MODEL_NAME} + Edge TTS')
+        embed.add_field(name='💬 Chat', value='Type any message!', inline=False)
+        embed.add_field(name='🌐 Web Search', value='**Auto** for current events | `!search [query]`', inline=False)
+        embed.add_field(name='🎤 Voice Input', value='Send voice message!', inline=False)
+        embed.add_field(name='🔊 Voice Output', value='`!voice on/off`', inline=False)
+        embed.add_field(name='🛠️ Commands', value='`!ping` `!model` `!search` `!voice` `!help`', inline=False)
+        embed.set_footer(text='Powered by Llama 3.3 + DuckDuckGo + Edge TTS')
         await message.channel.send(embed=embed)
         return
     
@@ -213,34 +278,24 @@ async def on_message(message):
             if attachment.content_type and 'audio' in attachment.content_type:
                 async with message.channel.typing():
                     await message.channel.send('🎤 *Listening...*')
-                    
                     transcript, error = await transcribe_voice(attachment.url)
-                    
                     if error:
                         await message.channel.send(error)
                         return
-                    
                     if not transcript:
-                        await message.channel.send('❌ Could not understand the audio')
+                        await message.channel.send('❌ Could not understand')
                         return
-                    
                     await message.channel.send(f'📝 *I heard:* "{transcript}"')
-                    
-                    ai_reply = await get_ai_response(transcript, message.author.name)
-                    
+                    ai_reply = await get_ai_response(transcript, message.author.name, message.channel)
                     if len(ai_reply) > 2000:
                         ai_reply = ai_reply[:1997] + '...'
                     await message.channel.send(ai_reply)
-                    
                     if VOICE_ENABLED:
                         audio_file = await text_to_speech(ai_reply)
                         if audio_file:
                             try:
                                 voice_file = discord.File(audio_file, filename="voice-message.mp3")
-                                await message.channel.send(
-                                    content="🔊 *Voice reply:*",
-                                    file=voice_file
-                                )
+                                await message.channel.send("🔊 *Voice reply:*", file=voice_file)
                             finally:
                                 try:
                                     os.remove(audio_file)
@@ -249,27 +304,23 @@ async def on_message(message):
                 return
     
     # === TEXT MESSAGE INPUT ===
-    async with message.channel.typing():
-        ai_reply = await get_ai_response(content, message.author.name)
-        
-        if len(ai_reply) > 2000:
-            ai_reply = ai_reply[:1997] + '...'
-        await message.channel.send(ai_reply)
-        
-        if VOICE_ENABLED:
-            audio_file = await text_to_speech(ai_reply)
-            if audio_file:
-                try:
-                    voice_file = discord.File(audio_file, filename="voice-message.mp3")
-                    await message.channel.send(
-                        content="🔊 *Voice message:*",
-                        file=voice_file
-                    )
-                finally:
+    if content:
+        async with message.channel.typing():
+            ai_reply = await get_ai_response(content, message.author.name, message.channel)
+            if len(ai_reply) > 2000:
+                ai_reply = ai_reply[:1997] + '...'
+            await message.channel.send(ai_reply)
+            if VOICE_ENABLED:
+                audio_file = await text_to_speech(ai_reply)
+                if audio_file:
                     try:
-                        os.remove(audio_file)
-                    except:
-                        pass
+                        voice_file = discord.File(audio_file, filename="voice-message.mp3")
+                        await message.channel.send("🔊 *Voice message:*", file=voice_file)
+                    finally:
+                        try:
+                            os.remove(audio_file)
+                        except:
+                            pass
 
 # === RUN BOT ===
 bot.run(os.getenv("DISCORD_TOKEN"))
