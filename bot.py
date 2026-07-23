@@ -5,7 +5,6 @@ import edge_tts
 import asyncio
 import re
 import tempfile
-from duckduckgo_search import DDGS
 
 # === CONFIGURATION ===
 VOICE_ENABLED = True
@@ -17,90 +16,71 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = discord.Client(intents=intents)
 
-# === WEB SEARCH (DuckDuckGo with error handling) ===
+# === WEB SEARCH (Multiple methods, ultra-safe) ===
 async def search_web(query):
-    """Search using DuckDuckGo with multiple fallback methods"""
+    """Search the web with multiple fallback methods"""
+    # Try Method 1: duckduckgo-search library
     try:
-        print(f"🔍 Searching for: {query}")
+        from duckduckgo_search import DDGS
         
-        # Method 1: Try DDGS library
-        def _search_ddgs():
-            try:
-                with DDGS() as ddgs:
-                    results = list(ddgs.text(query, max_results=3))
-                    return results
-            except Exception as e:
-                print(f"DDGS error: {e}")
-                return []
+        def _search():
+            with DDGS() as ddgs:
+                results = list(ddgs.text(query, max_results=3))
+                return results
         
-        results = await asyncio.to_thread(_search_ddgs)
+        results = await asyncio.to_thread(_search)
         
         if results and len(results) > 0:
-            print(f"✅ Got {len(results)} results from DDGS")
-            
-            context_parts = []
-            total_length = 0
-            MAX_TOTAL = 2500
-            
+            parts = []
+            total = 0
             for r in results[:3]:
-                content = r.get('body', '')[:400]
-                url = r.get('href', '')
-                title = r.get('title', '')
+                content = str(r.get('body', ''))[:400]
+                url = str(r.get('href', ''))
+                title = str(r.get('title', ''))
                 part = f"Title: {title}\nSource: {url}\n{content}"
-                
-                if total_length + len(part) > MAX_TOTAL:
+                if total + len(part) > 2500:
                     break
-                
-                context_parts.append(part)
-                total_length += len(part)
+                parts.append(part)
+                total += len(part)
             
-            if context_parts:
-                return "\n\n".join(context_parts)
-        
-        print("⚠️ DDGS returned no results, trying fallback...")
-        
-        # Method 2: Fallback to direct DuckDuckGo HTML scraping
-        def _search_html():
-            try:
-                url = "https://html.duckduckgo.com/html/"
-                data = {'q': query, 'b': ''}
-                response = requests.post(url, data=data, headers={
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                }, timeout=10)
-                
-                if response.status_code == 200:
-                    # Simple parsing - extract text snippets
-                    import re
-                    snippets = re.findall(r'class="result__snippet"[^>]*>(.*?)</a>', response.text, re.DOTALL)
-                    urls = re.findall(r'class="result__url"[^>]*>(.*?)</a>', response.text, re.DOTALL)
-                    
-                    parts = []
-                    for i, snippet in enumerate(snippets[:3]):
-                        url_text = urls[i].strip() if i < len(urls) else ""
-                        # Clean HTML tags
-                        clean_snippet = re.sub(r'<[^>]+>', '', snippet).strip()[:400]
-                        if clean_snippet:
-                            parts.append(f"Source: {url_text}\n{clean_snippet}")
-                    
-                    return "\n\n".join(parts) if parts else None
-                return None
-            except Exception as e:
-                print(f"HTML scrape error: {e}")
-                return None
-        
-        html_results = await asyncio.to_thread(_search_html)
-        if html_results:
-            print(f"✅ Got results from HTML scraping")
-            return html_results
-        
-        print("❌ All search methods failed")
-        return None
-        
+            if parts:
+                return "\n\n".join(parts)
     except Exception as e:
-        print(f"❌ Search exception: {e}")
-        return None
+        print(f"DDGS error: {e}")
+    
+    # Try Method 2: Wikipedia API (very reliable!)
+    try:
+        response = requests.get(
+            'https://en.wikipedia.org/w/api.php',
+            params={
+                'action': 'query',
+                'list': 'search',
+                'srsearch': query,
+                'format': 'json',
+                'srlimit': 3
+            },
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            results = data.get('query', {}).get('search', [])
+            
+            if results and len(results) > 0:
+                parts = []
+                for r in results[:3]:
+                    title = str(r.get('title', ''))
+                    snippet = re.sub(r'<[^>]+>', '', str(r.get('snippet', '')))[:400]
+                    parts.append(f"Title: {title}\n{snippet}")
+                
+                return "\n\n".join(parts)
+    except Exception as e:
+        print(f"Wikipedia error: {e}")
+    
+    # All methods failed
+    return ""
 
-# === AI WITH AUTO WEB SEARCH ===
+# === AI WITH WEB SEARCH (100% safe from None errors) ===
 async def get_ai_response(user_message, username, ctx_channel=None):
     try:
         groq_key = os.getenv("GROQ_API_KEY")
@@ -120,26 +100,45 @@ async def get_ai_response(user_message, username, ctx_channel=None):
         message_lower = user_message.lower()
         needs_search = any(keyword in message_lower for keyword in needs_search_keywords)
         
-        search_context = ""  # ← Always start as empty string!
+        # ALWAYS start with empty string, never None
+        search_results_text = ""
+        
         if needs_search:
-            if ctx_channel:
-                await ctx_channel.send('🔍 *Searching the web...*')
-            
-            search_result = await search_web(user_message)
-            
-            # ← FIX: Check if result is not None before concatenating!
-            if search_result and search_result.strip():
-                search_context = f"\n\n=== CURRENT WEB INFORMATION ===\n{search_result}\n=== END ===\n\nUse the above web search results to provide up-to-date information. Always cite source URLs."
-                print(f"✅ Search context: {len(search_context)} chars")
-            else:
+            try:
                 if ctx_channel:
-                    await ctx_channel.send('⚠️ *No search results, using my training data.*')
+                    await ctx_channel.send('🔍 *Searching the web...*')
+                
+                # Get search results (returns "" if fails, never None)
+                search_results_text = await search_web(user_message)
+                
+                # Extra safety: ensure it's a string
+                if not isinstance(search_results_text, str):
+                    search_results_text = ""
+                
+                if search_results_text and search_results_text.strip():
+                    if ctx_channel:
+                        await ctx_channel.send('✅ *Found information!*')
+                else:
+                    search_results_text = ""
+                    if ctx_channel:
+                        await ctx_channel.send('⚠️ *No results, using training data*')
+                        
+            except Exception as e:
+                print(f"Search error in get_ai_response: {e}")
+                search_results_text = ""
         
-        # ← FIX: Safe concatenation
-        full_prompt = user_message
-        if search_context and search_context.strip():
-            full_prompt = user_message + search_context
+        # Build prompt with ULTRA-SAFE string handling
+        user_prompt = str(user_message) if user_message else ""
         
+        if search_results_text and search_results_text.strip():
+            # Only add search context if we actually have it
+            user_prompt = user_prompt + "\n\n=== WEB SEARCH RESULTS ===\n" + search_results_text + "\n=== END ===\n\nUse these search results to provide accurate, up-to-date information. Cite source URLs."
+        
+        # Make sure user_prompt is never None
+        if not user_prompt:
+            user_prompt = "Hello"
+        
+        # Call Groq AI
         response = requests.post(
             'https://api.groq.com/openai/v1/chat/completions',
             headers={
@@ -149,8 +148,8 @@ async def get_ai_response(user_message, username, ctx_channel=None):
             json={
                 'model': MODEL_NAME,
                 'messages': [
-                    {'role': 'system', 'content': f'You are ShobJanta AI powered by Llama 3.3 70B. Chatting with {username}. You have access to real-time web search. Be concise (under 300 words), helpful, and always cite sources. Use Discord-friendly formatting.'},
-                    {'role': 'user', 'content': full_prompt}
+                    {'role': 'system', 'content': f'You are ShobJanta AI powered by Llama 3.3 70B. Chatting with {username}. Be concise (under 300 words) and helpful. Use Discord-friendly formatting.'},
+                    {'role': 'user', 'content': user_prompt}
                 ],
                 'max_tokens': 800,
                 'temperature': 0.7
@@ -160,37 +159,8 @@ async def get_ai_response(user_message, username, ctx_channel=None):
         
         if response.status_code == 200:
             return response.json()['choices'][0]['message']['content']
-        elif response.status_code == 413:
-            return await get_ai_response_no_search(user_message, username)
         else:
             return f'❌ API error: {response.status_code}'
-    except Exception as e:
-        return f'❌ Error: {str(e)}'
-
-async def get_ai_response_no_search(user_message, username):
-    try:
-        groq_key = os.getenv("GROQ_API_KEY")
-        response = requests.post(
-            'https://api.groq.com/openai/v1/chat/completions',
-            headers={
-                'Authorization': f'Bearer {groq_key}',
-                'Content-Type': 'application/json'
-            },
-            json={
-                'model': MODEL_NAME,
-                'messages': [
-                    {'role': 'system', 'content': f'You are ShobJanta AI chatting with {username}. Be concise.'},
-                    {'role': 'user', 'content': user_message}
-                ],
-                'max_tokens': 500,
-                'temperature': 0.7
-            },
-            timeout=20
-        )
-        
-        if response.status_code == 200:
-            return response.json()['choices'][0]['message']['content']
-        return f'❌ API error: {response.status_code}'
     except Exception as e:
         return f'❌ Error: {str(e)}'
 
@@ -225,6 +195,9 @@ async def transcribe_voice(audio_url):
 # === TEXT-TO-SPEECH ===
 async def text_to_speech(text):
     try:
+        if not text:
+            return None
+        
         clean_text = text
         clean_text = re.sub(r'```[\s\S]*?```', 'code block', clean_text)
         clean_text = re.sub(r'`[^`]+`', '', clean_text)
@@ -257,7 +230,7 @@ async def on_ready():
     print(f'✅ Bot ONLINE: {bot.user}')
     print(f'Model: {MODEL_NAME}')
     print(f'Voice: {VOICE_NAME}')
-    print(f'Web Search: ✅ DuckDuckGo (with fallback)')
+    print(f'Web Search: DDGS + Wikipedia fallback')
     print(f'Servers: {len(bot.guilds)}')
     print('=' * 50)
 
@@ -267,7 +240,7 @@ async def on_message(message):
         return
     
     global VOICE_ENABLED
-    content = message.content.strip()
+    content = message.content.strip() if message.content else ""
     
     # === COMMANDS ===
     if content == '!ping':
@@ -277,7 +250,7 @@ async def on_message(message):
     if content == '!model':
         await message.channel.send(
             f'🤖 **Model:** `{MODEL_NAME}`\n'
-            f'🌐 **Web Search:** ✅ DuckDuckGo\n'
+            f'🌐 **Web Search:** DDGS + Wikipedia\n'
             f'🔊 **Voice:** `{VOICE_NAME}`'
         )
         return
@@ -300,9 +273,9 @@ async def on_message(message):
     if content.startswith('!search '):
         query = content[8:]
         async with message.channel.typing():
-            await message.channel.send('🔍 *Searching DuckDuckGo...*')
+            await message.channel.send('🔍 *Searching...*')
             results = await search_web(query)
-            if results:
+            if results and results.strip():
                 await message.channel.send(f'**Results for:** {query}\n\n{results[:1900]}')
             else:
                 await message.channel.send('❌ No results found. Try different keywords.')
@@ -319,7 +292,7 @@ async def on_message(message):
         embed.add_field(name='🎤 Voice Input', value='Send voice message!', inline=False)
         embed.add_field(name='🔊 Voice Output', value='`!voice on/off`', inline=False)
         embed.add_field(name='🛠️ Commands', value='`!ping` `!model` `!search` `!voice` `!help`', inline=False)
-        embed.set_footer(text='Powered by Llama 3.3 + DuckDuckGo + Edge TTS')
+        embed.set_footer(text='Powered by Llama 3.3 + Web Search + Edge TTS')
         await message.channel.send(embed=embed)
         return
     
@@ -338,10 +311,10 @@ async def on_message(message):
                         return
                     await message.channel.send(f'📝 *I heard:* "{transcript}"')
                     ai_reply = await get_ai_response(transcript, message.author.name, message.channel)
-                    if len(ai_reply) > 2000:
+                    if ai_reply and len(ai_reply) > 2000:
                         ai_reply = ai_reply[:1997] + '...'
                     await message.channel.send(ai_reply)
-                    if VOICE_ENABLED:
+                    if VOICE_ENABLED and ai_reply:
                         audio_file = await text_to_speech(ai_reply)
                         if audio_file:
                             try:
@@ -358,10 +331,10 @@ async def on_message(message):
     if content:
         async with message.channel.typing():
             ai_reply = await get_ai_response(content, message.author.name, message.channel)
-            if len(ai_reply) > 2000:
+            if ai_reply and len(ai_reply) > 2000:
                 ai_reply = ai_reply[:1997] + '...'
             await message.channel.send(ai_reply)
-            if VOICE_ENABLED:
+            if VOICE_ENABLED and ai_reply:
                 audio_file = await text_to_speech(ai_reply)
                 if audio_file:
                     try:
