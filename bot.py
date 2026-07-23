@@ -9,6 +9,7 @@ import tempfile
 # === CONFIGURATION ===
 VOICE_ENABLED = True
 VOICE_NAME = "en-US-AriaNeural"
+MODEL_NAME = "llama-3.3-70b-versatile"  # ← NEWEST MODEL!
 
 # === DISCORD SETUP ===
 intents = discord.Intents.default()
@@ -29,9 +30,9 @@ async def get_ai_response(user_message, username):
                 'Content-Type': 'application/json'
             },
             json={
-                'model': 'llama-3.1-8b-instant',
+                'model': MODEL_NAME,  # ← Uses llama-3.3-70b-versatile
                 'messages': [
-                    {'role': 'system', 'content': f'You are ShobJanta AI, a Discord assistant powered by Llama 3.1 70B. You are chatting with {username}. Be concise (under 300 words), helpful, and friendly.'},
+                    {'role': 'system', 'content': f'You are ShobJanta AI, a Discord assistant powered by Llama 3.3 70B (the newest Meta model). You are chatting with {username}. Be concise (under 300 words), helpful, friendly, and honest. Use Discord-friendly formatting.'},
                     {'role': 'user', 'content': user_message}
                 ],
                 'max_tokens': 800,
@@ -42,36 +43,30 @@ async def get_ai_response(user_message, username):
         
         if response.status_code == 200:
             return response.json()['choices'][0]['message']['content']
-        return f'❌ API error: {response.status_code}'
+        else:
+            return f'❌ API error: {response.status_code} - {response.text[:200]}'
     except Exception as e:
         return f'❌ Error: {str(e)}'
 
 # === SPEECH-TO-TEXT (Voice → Text) ===
 async def transcribe_voice(audio_url):
-    """Download Discord voice message and transcribe it using Groq Whisper"""
     try:
         groq_key = os.getenv("GROQ_API_KEY")
         if not groq_key:
             return None, "❌ GROQ_API_KEY not set!"
         
-        # Step 1: Download the audio file from Discord
-        # Discord voice messages need special auth header
-        async with message.channel.typing():
-            # Get the audio file
-            audio_data = requests.get(audio_url, timeout=30)
+        audio_data = requests.get(audio_url, timeout=30)
         
         if audio_data.status_code != 200:
             return None, f"❌ Failed to download audio: {audio_data.status_code}"
         
-        # Step 2: Send to Groq Whisper for transcription
-        # Groq offers FREE Whisper API!
         files = {
             'file': ('voice.ogg', audio_data.content, 'audio/ogg'),
         }
         data = {
-            'model': 'whisper-large-v3',  # Groq's Whisper model
+            'model': 'whisper-large-v3',
             'response_format': 'json',
-            'language': 'en',  # Optional: auto-detect if not specified
+            'language': 'en',
         }
         headers = {
             'Authorization': f'Bearer {groq_key}'
@@ -92,7 +87,7 @@ async def transcribe_voice(audio_url):
             else:
                 return None, "❌ Could not understand the voice message"
         else:
-            return None, f"❌ Transcription error: {response.status_code}"
+            return None, f"❌ Transcription error: {response.status_code} - {response.text[:200]}"
     
     except Exception as e:
         return None, f"❌ Error: {str(e)}"
@@ -131,8 +126,10 @@ async def text_to_speech(text):
 async def on_ready():
     print('=' * 50)
     print(f'✅ Bot ONLINE: {bot.user}')
+    print(f'Model: {MODEL_NAME}')
     print(f'Voice OUT: {"ON" if VOICE_ENABLED else "OFF"}')
     print(f'Voice IN: ON (Whisper)')
+    print(f'Servers: {len(bot.guilds)}')
     print('=' * 50)
 
 @bot.event
@@ -148,19 +145,23 @@ async def on_message(message):
         await message.channel.send('🏓 Pong!')
         return
     
+    if content == '!model':
+        await message.channel.send(f'🤖 **Model:** `{MODEL_NAME}`\nPowered by Groq (Meta\'s Llama 3.3 70B)')
+        return
+    
     if content == '!voice on':
         VOICE_ENABLED = True
-        await message.channel.send('🔊 **Voice messages ENABLED!** I will speak my replies.')
+        await message.channel.send('🔊 **Voice messages ENABLED!**')
         return
     
     if content == '!voice off':
         VOICE_ENABLED = False
-        await message.channel.send('🔇 **Voice messages disabled.** Text-only mode.')
+        await message.channel.send('🔇 **Voice messages disabled.**')
         return
     
     if content == '!voice':
         status = '🔊 ON' if VOICE_ENABLED else '🔇 OFF'
-        await message.channel.send(f'Voice output: **{status}**\nVoice input: **🎤 ON** (always listening!)\nType `!voice on/off` to toggle output.')
+        await message.channel.send(f'Voice output: **{status}**\nVoice input: **🎤 ON**')
         return
     
     if content == '!help':
@@ -169,40 +170,21 @@ async def on_message(message):
             description='AI assistant with voice support!',
             color=0x00ff00
         )
-        embed.add_field(
-            name='💬 Text Chat',
-            value='Just type any message!',
-            inline=False
-        )
-        embed.add_field(
-            name='🎤 Voice Input',
-            value='**Send a voice message!** I will listen and transcribe it.',
-            inline=False
-        )
-        embed.add_field(
-            name='🔊 Voice Output',
-            value='`!voice on/off` - Toggle voice replies',
-            inline=False
-        )
-        embed.add_field(
-            name='🛠️ Commands',
-            value='`!ping` `!help` `!voice`',
-            inline=False
-        )
-        embed.set_footer(text='Powered by Llama 3.1 70B + Whisper + Edge TTS')
+        embed.add_field(name='💬 Text Chat', value='Just type any message!', inline=False)
+        embed.add_field(name='🎤 Voice Input', value='Send a voice message and I will listen!', inline=False)
+        embed.add_field(name='🔊 Voice Output', value='`!voice on/off` to toggle', inline=False)
+        embed.add_field(name='🛠️ Commands', value='`!ping` `!model` `!help` `!voice`', inline=False)
+        embed.set_footer(text=f'Powered by {MODEL_NAME} + Whisper + Edge TTS')
         await message.channel.send(embed=embed)
         return
     
     # === VOICE MESSAGE INPUT ===
-    # Check if message has audio attachment (voice message)
     if message.attachments:
         for attachment in message.attachments:
-            # Check if it's an audio file
             if attachment.content_type and 'audio' in attachment.content_type:
                 async with message.channel.typing():
-                    await message.channel.send('🎤 *Listening to your voice message...*')
+                    await message.channel.send('🎤 *Listening...*')
                     
-                    # Transcribe the voice message
                     transcript, error = await transcribe_voice(attachment.url)
                     
                     if error:
@@ -213,18 +195,14 @@ async def on_message(message):
                         await message.channel.send('❌ Could not understand the audio')
                         return
                     
-                    # Show what we heard
                     await message.channel.send(f'📝 *I heard:* "{transcript}"')
                     
-                    # Get AI response
                     ai_reply = await get_ai_response(transcript, message.author.name)
                     
-                    # Send text reply
                     if len(ai_reply) > 2000:
                         ai_reply = ai_reply[:1997] + '...'
                     await message.channel.send(ai_reply)
                     
-                    # Send voice reply if enabled
                     if VOICE_ENABLED:
                         audio_file = await text_to_speech(ai_reply)
                         if audio_file:
@@ -239,7 +217,7 @@ async def on_message(message):
                                     os.remove(audio_file)
                                 except:
                                     pass
-                return  # Processed voice message, exit
+                return
     
     # === TEXT MESSAGE INPUT ===
     async with message.channel.typing():
