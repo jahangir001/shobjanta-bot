@@ -8,21 +8,22 @@ import tempfile
 
 # === CONFIGURATION ===
 VOICE_ENABLED = True
-VOICE_NAME = "en-GB-SoniaNeural"
-MODEL_NAME = "groq/compound"  # ← NEWEST MODEL!
+VOICE_NAME = "en-GB-SoniaNeural"  # Your British voice!
+MODEL_NAME = "groq/compound"  # ← Has built-in web search!
 
 # === DISCORD SETUP ===
 intents = discord.Intents.default()
 intents.message_content = True
 bot = discord.Client(intents=intents)
 
-# === AI FUNCTION ===
+# === AI FUNCTION WITH WEB SEARCH (via groq/compound) ===
 async def get_ai_response(user_message, username):
     try:
         groq_key = os.getenv("GROQ_API_KEY")
         if not groq_key:
             return "❌ GROQ_API_KEY not set!"
         
+        # groq/compound automatically uses web search when needed!
         response = requests.post(
             'https://api.groq.com/openai/v1/chat/completions',
             headers={
@@ -30,12 +31,54 @@ async def get_ai_response(user_message, username):
                 'Content-Type': 'application/json'
             },
             json={
-                'model': MODEL_NAME,  # ← Uses llama-3.3-70b-versatile
+                'model': MODEL_NAME,  # groq/compound has built-in tools
                 'messages': [
-                    {'role': 'system', 'content': f'You are ShobJanta AI, a Discord assistant powered by Llama 3.3 70B (the newest Meta model). You are chatting with {username}. Be concise (under 300 words), helpful, friendly, and honest. Use Discord-friendly formatting.'},
+                    {'role': 'system', 'content': f'You are ShobJanta AI, a helpful Discord assistant. You are chatting with {username}. You have access to web search via built-in tools - use it when asked about current events, news, prices, or anything requiring up-to-date information. Be concise (under 300 words), helpful, and honest. Always cite sources when using web search.'},
                     {'role': 'user', 'content': user_message}
                 ],
-                'max_tokens': 800,
+                'max_tokens': 1000,
+                'temperature': 0.7
+            },
+            timeout=45  # Longer timeout for web search
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            content = data['choices'][0]['message']['content']
+            
+            # groq/compound returns citations/executed tools info
+            # Check if there are tool calls in response
+            message_obj = data['choices'][0]['message']
+            if 'executed_tools' in message_obj or 'tool_calls' in str(data):
+                # Add note that web search was used
+                content = f"{content}"
+            
+            return content
+        elif response.status_code == 413:
+            # Too large - retry with smaller max_tokens
+            return await get_ai_response_simple(user_message, username)
+        else:
+            return f'❌ API error: {response.status_code} - {response.text[:200]}'
+    except Exception as e:
+        return f'❌ Error: {str(e)}'
+
+async def get_ai_response_simple(user_message, username):
+    """Fallback without web search"""
+    try:
+        groq_key = os.getenv("GROQ_API_KEY")
+        response = requests.post(
+            'https://api.groq.com/openai/v1/chat/completions',
+            headers={
+                'Authorization': f'Bearer {groq_key}',
+                'Content-Type': 'application/json'
+            },
+            json={
+                'model': 'llama-3.3-70b-versatile',  # Fallback to regular model
+                'messages': [
+                    {'role': 'system', 'content': f'You are ShobJanta AI chatting with {username}. Be concise and helpful.'},
+                    {'role': 'user', 'content': user_message}
+                ],
+                'max_tokens': 600,
                 'temperature': 0.7
             },
             timeout=30
@@ -43,8 +86,7 @@ async def get_ai_response(user_message, username):
         
         if response.status_code == 200:
             return response.json()['choices'][0]['message']['content']
-        else:
-            return f'❌ API error: {response.status_code} - {response.text[:200]}'
+        return f'❌ API error: {response.status_code}'
     except Exception as e:
         return f'❌ Error: {str(e)}'
 
@@ -87,10 +129,10 @@ async def transcribe_voice(audio_url):
             else:
                 return None, "❌ Could not understand the voice message"
         else:
-            return None, f"❌ Transcription error: {response.status_code} - {response.text[:200]}"
+            return None, f"❌ Transcription error: {response.status_code}"
     
     except Exception as e:
-        return None, f"❌ Error: {str(e)}"
+        return None, f"❌ Error: {str(e)}'
 
 # === TEXT-TO-SPEECH (Text → Voice) ===
 async def text_to_speech(text):
@@ -126,9 +168,8 @@ async def text_to_speech(text):
 async def on_ready():
     print('=' * 50)
     print(f'✅ Bot ONLINE: {bot.user}')
-    print(f'Model: {MODEL_NAME}')
-    print(f'Voice OUT: {"ON" if VOICE_ENABLED else "OFF"}')
-    print(f'Voice IN: ON (Whisper)')
+    print(f'Model: {MODEL_NAME} (with web search!)')
+    print(f'Voice: {VOICE_NAME}')
     print(f'Servers: {len(bot.guilds)}')
     print('=' * 50)
 
@@ -146,7 +187,12 @@ async def on_message(message):
         return
     
     if content == '!model':
-        await message.channel.send(f'🤖 **Model:** `{MODEL_NAME}`\nPowered by Groq (Meta\'s Llama 3.3 70B)')
+        await message.channel.send(
+            f'🤖 **Model:** `{MODEL_NAME}`\n'
+            f'🌐 **Web Search:** ✅ Built-in (via groq/compound)\n'
+            f'🔊 **Voice:** `{VOICE_NAME}`\n'
+            f'Powered by Groq'
+        )
         return
     
     if content == '!voice on':
@@ -166,15 +212,36 @@ async def on_message(message):
     
     if content == '!help':
         embed = discord.Embed(
-            title='🤖 ShobJanta AI - Voice Edition',
-            description='AI assistant with voice support!',
+            title='🤖 ShobJanta AI',
+            description='AI assistant with voice + web search!',
             color=0x00ff00
         )
-        embed.add_field(name='💬 Text Chat', value='Just type any message!', inline=False)
-        embed.add_field(name='🎤 Voice Input', value='Send a voice message and I will listen!', inline=False)
-        embed.add_field(name='🔊 Voice Output', value='`!voice on/off` to toggle', inline=False)
-        embed.add_field(name='🛠️ Commands', value='`!ping` `!model` `!help` `!voice`', inline=False)
-        embed.set_footer(text=f'Powered by {MODEL_NAME} + Whisper + Edge TTS')
+        embed.add_field(
+            name='💬 Text Chat',
+            value='Just type any message!',
+            inline=False
+        )
+        embed.add_field(
+            name='🌐 Web Search',
+            value='**Automatic!** I can search the internet for current info!',
+            inline=False
+        )
+        embed.add_field(
+            name='🎤 Voice Input',
+            value='Send a voice message!',
+            inline=False
+        )
+        embed.add_field(
+            name='🔊 Voice Output',
+            value='`!voice on/off` to toggle',
+            inline=False
+        )
+        embed.add_field(
+            name='🛠️ Commands',
+            value='`!ping` `!model` `!help` `!voice`',
+            inline=False
+        )
+        embed.set_footer(text=f'Powered by {MODEL_NAME} + Edge TTS')
         await message.channel.send(embed=embed)
         return
     
