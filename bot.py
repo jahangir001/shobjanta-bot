@@ -18,128 +18,86 @@ bot = discord.Client(intents=intents)
 
 # === WEB SEARCH (Multiple methods, ultra-safe) ===
 async def search_web(query):
-    """Universal web search - works for ANY current topic!"""
-    from datetime import datetime, timedelta
-    import xml.etree.ElementTree as ET
+    """Search using DuckDuckGo HTML - gets current results for ANY topic!"""
+    import re
     import urllib.parse
-    from email.utils import parsedate_to_datetime
     
     try:
-        # Calculate date 14 days ago (catches recent events)
-        cutoff_date = datetime.now() - timedelta(days=14)
-        date_str = cutoff_date.strftime('%Y-%m-%d')
-        
-        # Search Google News with date filter
+        # Use DuckDuckGo's HTML version (not the API, not RSS)
         encoded_query = urllib.parse.quote(query)
-        url = (
-            f"https://news.google.com/rss/search?"
-            f"q={encoded_query}+after:{date_str}&"
-            f"hl=en-US&gl=US&ceid=US:en"
+        url = f"https://html.duckduckgo.com/html/?q={encoded_query}+2026"
+        
+        response = requests.post(
+            url,
+            data={'q': f"{query} 2026"},
+            headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            },
+            timeout=15
         )
         
-        response = requests.get(url, timeout=10, headers={
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        })
+        if response.status_code == 200:
+            # Parse HTML to extract results
+            html = response.text
+            
+            # Extract result snippets and URLs
+            results = []
+            
+            # Find result blocks
+            result_pattern = r'class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>.*?class="result__snippet"[^>]*>(.*?)</td>'
+            matches = re.findall(result_pattern, html, re.DOTALL)
+            
+            for i, match in enumerate(matches[:5]):
+                url_text = match[0]
+                title = re.sub(r'<[^>]+>', '', match[1]).strip()
+                snippet = re.sub(r'<[^>]+>', '', match[2]).strip()
+                
+                if title and snippet:
+                    results.append(f"[{i+1}] {title}\n{snippet}\nURL: {url_text}")
+            
+            if results:
+                return "=== Search Results ===\n" + "\n\n".join(results)
         
-        if response.status_code != 200:
-            return ""
+        # Fallback: Try DuckDuckGo instant answer
+        response = requests.get(
+            'https://api.duckduckgo.com/',
+            params={
+                'q': query,
+                'format': 'json',
+                'no_html': 1,
+                'skip_disambig': 0
+            },
+            timeout=10
+        )
         
-        # Parse XML
-        try:
-            root = ET.fromstring(response.content)
-        except ET.ParseError:
-            return ""
+        if response.status_code == 200:
+            data = response.json()
+            
+            # Get abstract (main info)
+            abstract = data.get('Abstract', '')
+            answer = data.get('Answer', '')
+            definition = data.get('Definition', '')
+            
+            if abstract:
+                return f"=== Information ===\n{abstract}"
+            elif answer:
+                return f"=== Answer ===\n{answer}"
+            elif definition:
+                return f"=== Definition ===\n{definition}"
+            
+            # Get related topics
+            related = data.get('RelatedTopics', [])
+            if related:
+                parts = []
+                for topic in related[:3]:
+                    if isinstance(topic, dict) and 'Text' in topic:
+                        text = topic['Text'][:300]
+                        parts.append(text)
+                
+                if parts:
+                    return "=== Related Information ===\n" + "\n\n".join(parts)
         
-        items = root.findall('.//item')
-        if not items:
-            return ""
-        
-        # Process and filter articles
-        articles = []
-        for item in items[:15]:  # Check top 15
-            title_elem = item.find('title')
-            pub_date_elem = item.find('pubDate')
-            source_elem = item.find('source')
-            
-            if title_elem is None:
-                continue
-            
-            title = title_elem.text
-            pub_date_str = pub_date_elem.text if pub_date_elem is not None else ''
-            source = source_elem.text if source_elem is not None else 'Unknown'
-            
-            # Parse date
-            article_date = None
-            if pub_date_str:
-                try:
-                    article_date = parsedate_to_datetime(pub_date_str)
-                except:
-                    pass
-            
-            # Skip if too old
-            if article_date:
-                try:
-                    if article_date < cutoff_date:
-                        continue
-                except:
-                    pass
-            
-            # Score based on how "current" the article sounds
-            score = 0
-            title_lower = title.lower()
-            
-            # Boost recent results keywords
-            current_keywords = ['wins', 'won', 'defeats', 'beats', 'champion', 
-                              'announced', 'released', 'launches', 'reveals',
-                              'final', 'result', 'today', 'yesterday', 'this week']
-            for keyword in current_keywords:
-                if keyword in title_lower:
-                    score += 5
-            
-            # Penalize prediction/speculation
-            speculation_keywords = ['prediction', 'predict', 'simulate', 'forecast',
-                                   'might', 'could', 'possibly', 'speculation']
-            for keyword in speculation_keywords:
-                if keyword in title_lower:
-                    score -= 10
-            
-            # Boost if very recent (last 3 days)
-            if article_date:
-                try:
-                    days_old = (datetime.now(article_date.tzinfo) - article_date).days
-                    if days_old <= 1:
-                        score += 15
-                    elif days_old <= 3:
-                        score += 10
-                    elif days_old <= 7:
-                        score += 5
-                except:
-                    pass
-            
-            articles.append({
-                'title': title,
-                'source': source,
-                'date': pub_date_str,
-                'score': score,
-                'days_old': (datetime.now(article_date.tzinfo) - article_date).days if article_date else 999
-            })
-        
-        if not articles:
-            return ""
-        
-        # Sort by score (highest first), then by recency
-        articles.sort(key=lambda x: (x['score'], -x['days_old']), reverse=True)
-        
-        # Build result string with top 5
-        parts = ["=== LATEST NEWS (Most Recent & Relevant) ==="]
-        for i, article in enumerate(articles[:5]):
-            parts.append(
-                f"\n[{i+1}] {article['title']}\n"
-                f"Source: {article['source']}\n"
-                f"Published: {article['date']}"
-            )
-        
-        return "\n".join(parts)
+        return ""
     
     except Exception as e:
         print(f"Search error: {e}")
