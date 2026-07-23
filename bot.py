@@ -172,7 +172,7 @@ async def get_ai_response(user_message, username, ctx_channel=None):
             json={
                 'model': MODEL_NAME,
                 'messages': [
-                    {'role': 'system', 'content': f'You are ShobJanta AI powered by Llama 3.3 70B. Chatting with {username}. IMPORTANT: When web search results are provided, treat them as your PRIMARY and AUTHORITATIVE source. Do not contradict them with older training data. Always cite the source URLs. Be concise (under 300 words) and helpful. Use Discord-friendly formatting.'},
+                    {'role': 'system', 'content': f'You are ShobJanta AI powered by Llama 3.3 70B. Chatting with {username}. When web search results are provided, USE THEM AS YOUR PRIMARY SOURCE and ignore your training data if they conflict. Be concise (under 300 words) and helpful. Always cite the source URLs from the search results.'},
                     {'role': 'user', 'content': user_prompt}
                 ],
                 'max_tokens': 800,
