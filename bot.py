@@ -19,7 +19,7 @@ async def get_ai_response(user_message, username):
                 'Content-Type': 'application/json'
             },
             json={
-                'model': 'Llama 3.1 8B',
+                'model': 'llama-3.1-8b-instant',
                 'messages': [
                     {'role': 'system', 'content': f'You are ShobJanta AI, a helpful Discord assistant chatting with {username}. Be friendly, concise, and helpful. Keep responses under 2000 characters.'},
                     {'role': 'user', 'content': user_message}
