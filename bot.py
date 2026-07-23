@@ -9,7 +9,8 @@ import tempfile
 # === CONFIGURATION ===
 VOICE_ENABLED = True
 VOICE_NAME = "en-US-AriaNeural"
-MODEL_NAME = "llama-3.3-70b-versatile"  # ← NEWEST MODEL!
+#MODEL_NAME = "llama-3.3-70b-versatile"  # ← NEWEST MODEL!
+MODEL_NAME = "openai/gpt-oss-20b"  # ← NEWEST MODEL!
 
 # === DISCORD SETUP ===
 intents = discord.Intents.default()
